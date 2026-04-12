@@ -11,18 +11,27 @@ class Scheduler:
         if seed is not None:
             random.seed(seed)
 
-        self.employees = [
-            "F Tomasz", "F Krzysztof", "S Sławomir", "G Artur",
-            "M Zbigniew", "W Magdalena", "D Janusz",
-            "D Krystian", "P Jacek", "F Beata", "P Barbara"
-        ]
-            
+        # 1. Definiujemy grupy
+        self.special_rotation_2 = ["T Marek", "N Wojciech", "K Hubert"]
         self.special_rotation = ["P Barbara", "F Beata", "P Jacek", "D Krystian"]
+        
+        # 2. Definiujemy "zwykłych" pracowników
+        normal_staff = [
+            "F Tomasz", "F Krzysztof", "S Sławomir", "G Artur",
+            "M Zbigniew", "W Magdalena", "D Janusz"
+        ]
 
+        # 3. Łączymy w poprawnej kolejności: Zwykli -> Grupa 2 -> Grupa 1
+        # Dzięki temu w Excelu Marek będzie pod Januszem, ale przed Barbarą.
+        self.employees = normal_staff + self.special_rotation_2 + self.special_rotation
+
+        # ... reszta słowników bez zmian ...
         self.SHIFTS = {
             "07.00-15.00": (7, 15, 8), "14.00-22.00": (14, 22, 8), "08.00-17.00": (8, 17, 9),
-            "07.00-14.00": (7, 14, 7), "07.00-13.00": (7, 13, 6), "07.00-12.00": (7, 12, 5),
-            "14.00-21.00": (14, 21, 7), "14.00-20.00": (14, 20, 6), "14.00-19.00": (14, 19, 5), "12.00-20.00": (12, 20, 8),
+            "07.00-14.00": (7, 14, 7), "07.00-13.00": (7, 13, 6), "07.00-12.00": (7, 12, 5), 
+            "13.00-21.00": (13, 21, 8), "08.00-16.00": (8, 16, 8),
+            "14.00-21.00": (14, 21, 7), "14.00-20.00": (14, 20, 6), "14.00-19.00": (14, 19, 5), 
+            "12.00-20.00": (12, 20, 8),
             "OFF": (None, None, 0), "WN": (None, None, 0), "WS": (None, None, 0),
             "WP": (None, None, 0), "WW": (None, None, 0), "WH": (None, None, 0),
         }
@@ -54,14 +63,14 @@ class Scheduler:
 
     def _make_weekly_pref(self, weeks, employees):
         weekly_pref = {}
-        rotation = self.special_rotation
-        rot_len = len(rotation)
         
-        normal_candidates = [e for e in employees if e not in rotation]
-        # Mieszamy na starcie, żeby co miesiąc zaczynał kto inny
+        rotation_1 = self.special_rotation 
+        rotation_2 = self.special_rotation_2 
+        
+        all_special = set(rotation_1) | set(rotation_2)
+        normal_candidates = [e for e in employees if e not in all_special]
         random.shuffle(normal_candidates)
-        
-        # Generator: zwraca tylko JEDNĄ osobę z grupy normalnej
+
         def get_next_afternoon_worker():
             idx = 0
             while True:
@@ -71,34 +80,53 @@ class Scheduler:
         afternoon_gen = get_next_afternoon_worker()
         sorted_weeks = sorted(weeks)
 
+        # Sprawdzamy długość pierwszego tygodnia
+        first_week_days = [d for d in self.days if self.week_index(d) == sorted_weeks[0]]
+        work_days_in_first_week = len([d for d in first_week_days if d.weekday() < 5])
+
         for i, w in enumerate(sorted_weeks):
             weekly_pref[w] = {}
             
-            # 1. Obsługa rotacji specjalnej (1 osoba na 14-22)
-            special_idx = i % rot_len
-            special_on_second = rotation[special_idx]
-            
-            for e in employees:
-                if e in rotation:
-                    weekly_pref[w][e] = "14.00-22.00" if e == special_on_second else "07.00-15.00"
-                else:
-                    weekly_pref[w][e] = "07.00-15.00" # Domyślnie rano
-            
-            # 2. Pobieramy tylko JEDNĄ osobę z grupy normalnej na 12.00-20.00
+            # Logika "krótkiego tygodnia"
+            if work_days_in_first_week < 3:
+                rot_idx = (i - 1) if i > 0 else 0
+            else:
+                rot_idx = i
+
+            # --- 1. PRZYPISANIE GRUPY 2 (MAREK I INNI) - PIERWSZA KOLEJNOŚĆ ---
+            special_2_person = rotation_2[rot_idx % len(rotation_2)]
+            for e in rotation_2:
+                if e in employees:
+                    # 13-21 dla wybranego, reszta 08-16
+                    weekly_pref[w][e] = "13.00-21.00" if e == special_2_person else "08.00-16.00"
+
+            # --- 2. PRZYPISANIE GRUPY 1 (BARBARA I INNI) ---
+            special_1_person = rotation_1[rot_idx % len(rotation_1)]
+            for e in rotation_1:
+                if e in employees:
+                    weekly_pref[w][e] = "14.00-22.00" if e == special_1_person else "07.00-15.00"
+
+            # --- 3. PRZYPISANIE GRUPY NORMALNEJ (TOMASZ I INNI) ---
             worker_12_20 = next(afternoon_gen)
-            weekly_pref[w][worker_12_20] = "12.00-20.00"
+            for e in normal_candidates:
+                if e in employees:
+                    weekly_pref[w][e] = "12.00-20.00" if e == worker_12_20 else "07.00-15.00"
                 
         return weekly_pref
 
     def _assign_weekend_day(self, d, weekly_pref, week_of, schedule, hours, stats, 
                             last_sun_day, last_hol_day, last_sat_day, assigned_today):
+        # 1. Definiujemy osoby, które MAJĄ ZAKAZ pracy w weekendy i święta
+        forbidden_employees = set(self.special_rotation_2) | set(self.special_rotation)
+        
         weekday = d.weekday()
         is_hol = d in polish_holidays(d.year)
         
+        # Ustalamy numer tygodnia w miesiącu, aby wiedzieć czy dyżur jest 1- czy 2-osobowy
         sorted_weeks = sorted(set(week_of.values()))
         nth_week = sorted_weeks.index(week_of[d]) + 1
         
-        # Ustalamy ilu pracowników i jakie zmiany
+        # Logika obsady: Święta = 2 osoby, weekendy co drugi tydzień 2 osoby, inaczej 1 osoba
         if is_hol:
             num_workers = 2
             forced_shift = None
@@ -108,23 +136,28 @@ class Scheduler:
 
         scored_candidates = []
         for e in schedule.keys():
-            if e in self.special_rotation or e in assigned_today:
+            # BLOKADA: Jeśli pracownik jest w grupie specjalnej 1 lub 2, pomiń go
+            if e in forbidden_employees:
                 continue
             
-            # Blokada: Nie pracujemy w niedzielę, jeśli była pracująca sobota
+            # Jeśli pracownik ma już przypisane coś na dziś (np. urlop WW)
+            if schedule[e].get(d) == "WW" or e in assigned_today:
+                continue
+            
+            # Blokada: Nie pracujemy w niedzielę, jeśli była pracująca sobota (zasada odpoczynku)
             if weekday == 6:
                 yesterday = d - timedelta(days=1)
                 if schedule[e].get(yesterday) not in ("OFF", "WN", "WS", "WP", "WH"):
                     continue
 
-            # WYBÓR ODPOWIEDNIEJ PAMIĘCI (Święto != Niedziela)
+            # Wybór odpowiedniej pamięci i limitów dla punktacji
             if is_hol:
                 last = last_hol_day.get(e)
-                limit = 10 # Minimalny odstęp między świętami
+                limit = 10 
                 work_count = stats[e]["holidays"]
             elif weekday == 6:
                 last = last_sun_day.get(e)
-                limit = 21 # Twoje żelazne 3 tygodnie dla niedziel
+                limit = 21 # Minimum 3 tygodnie odstępu dla niedziel
                 work_count = stats[e]["sundays"]
             else: # Sobota
                 last = last_sat_day.get(e)
@@ -133,28 +166,33 @@ class Scheduler:
                 
             days_since = (d - last).days if last else 999
             
-            # Punktacja: Grupa 0 (odpoczęli wystarczająco) vs Grupa 1 (kolejka ratunkowa)
+            # Punktacja (score): 
+            # (0, ...) - osoby, które odpoczywały powyżej limitu (priorytet)
+            # (1, ...) - osoby, które muszą wejść w kolejkę ratunkową
             if days_since < limit:
-                # Jeśli ktoś musi pracować "za karę", bierzemy tego, kto odpoczywał najdłużej
                 score = (1, -days_since, work_count)
             else:
-                # Jeśli są osoby z czystym kontem, bierzemy tę z najmniejszą liczbą dni danego typu
                 score = (0, work_count, -days_since)
 
             scored_candidates.append({"name": e, "score": score})
 
-        # Sortowanie i wybór
+        # Sortowanie kandydatów według punktacji i wybór najlepszych
         scored_candidates.sort(key=lambda x: x["score"])
         picked = [c["name"] for c in scored_candidates[:num_workers]]
         
+        # Przypisywanie zmian wybranym osobom
         for i, e in enumerate(picked):
+            # Ustalanie kodu zmiany (08-17 lub rano/popołudnie)
             shift = forced_shift if forced_shift else ("07.00-15.00" if i == 0 else "14.00-22.00")
-            if is_hol and shift == "08.00-17.00": shift = "07.00-15.00" # Poprawka dla świąt
+            
+            # Korekta dla świąt (nie używamy 08-17 w święta)
+            if is_hol and shift == "08.00-17.00": 
+                shift = "07.00-15.00"
 
             schedule[e][d] = shift
             hours[e] += self.SHIFTS[shift][2]
             
-            # Zapisujemy statystyki i aktualizujemy ODDZIELNE daty
+            # Aktualizacja statystyk i dat ostatniej pracy
             if is_hol:
                 stats[e]["holidays"] += 1
                 last_hol_day[e] = d
@@ -171,9 +209,14 @@ class Scheduler:
         w = week_of[d]
         prev = d - timedelta(days=1)
         
-        # 1. Najpierw obsadzamy tych, co mają mieć popołudnie wg planu
-        pm_workers = [e for e in schedule.keys() if weekly_pref[w][e] in ("14.00-22.00", "12.00-20.00")]
+        # 1. Najpierw definiujemy listę pracowników na popołudnie
+        pm_workers = [e for e in schedule.keys() if weekly_pref[w][e] in ("14.00-22.00", "12.00-20.00", "13.00-21.00")]        
+        
+        # 2. Teraz sprawdzamy urlopy i przypisujemy zmiany
         for e in pm_workers:
+            if schedule[e].get(d) == "WW": 
+                continue # Pomiń jeśli ma urlop
+                
             pref = weekly_pref[w][e]
             if self.rest_ok(schedule[e].get(prev, "OFF"), prev, pref, d):
                 schedule[e][d] = pref
@@ -210,6 +253,9 @@ class Scheduler:
 
         for e in sorted_emp:
             for d in days:
+                # Jeśli w dany dzień pracownik ma WW, to nie wypracował w nim odbioru!
+                if schedule[e].get(d) == "WW": continue
+
                 shift = schedule[e].get(d)
                 if shift not in ("07.00-15.00", "14.00-22.00", "08.00-17.00"): continue
                 
@@ -218,7 +264,8 @@ class Scheduler:
 
                 # Szukamy dnia do odbioru (musi mieć wpisaną zmianę roboczą 07.00-15.00 lub 14.00-22.00)
                 possible = [wd for wd in workdays if abs((wd - d).days) <= 7 
-                            and schedule[e][wd] in ("07.00-15.00", "14.00-22.00")]
+                            and schedule[e][wd] in ("07.00-15.00", "14.00-22.00")
+                            and schedule[e][wd] != "WW"] # Nie zabieraj dnia, który już jest urlopem!
                 
                 if possible:
                     # Wybieramy dzień tak, by nie było za dużo odbiorów naraz w biurze
@@ -261,11 +308,23 @@ class Scheduler:
                     except (ValueError, IndexError):
                         continue # Jeśli coś pójdzie nie tak z formatem, szukaj innego dnia
 
-    def generate(self, year, month, employees=None, initial_stats=None, last_weekend_workers=None):
+    def generate(self, year, month, employees=None, initial_stats=None, last_weekend_workers=None, leaves=None):
         self.days = month_days(year, month)
-        employees = employees or self.employees
+        if employees is None:
+                    employees = self.employees 
         holidays = set(polish_holidays(year))
         schedule = {e: {d: "OFF" for d in self.days} for e in employees}
+
+        # --- NOWA LOGIKA: WPISYWANIE URLOPÓW NA START ---
+        if leaves:
+            for emp_name, days_off in leaves.items():
+                if emp_name in schedule:
+                    for d_num in days_off:
+                        # Znajdujemy konkretną datę w self.days
+                        target_date = date(year, month, d_num)
+                        if target_date in schedule[emp_name]:
+                            schedule[emp_name][target_date] = "WW"
+
         hours = {e: 0 for e in employees}
         week_of = {d: self.week_index(d) for d in self.days}
         
@@ -346,7 +405,7 @@ class Scheduler:
             for i, d in enumerate(self.days):
                 c = 3 + i; val = schedule[e][d]
                 cell_code = ws.cell(row, c, val); cell_code.alignment = center; cell_code.border = border
-                if val in ("WN", "WS", "WP", "WH"): cell_code.fill = odb_f
+                if val in ("WN", "WS", "WP", "WH", "WW"): cell_code.fill = odb_f
                 elif d in holidays: cell_code.fill = hol_f
                 elif d.weekday() == 5: cell_code.fill = sat_f
                 elif d.weekday() == 6: cell_code.fill = sun_f
@@ -378,10 +437,10 @@ class Scheduler:
 
         wb.save(filename)
 
-    def generate_and_save(self, year, month, employees=None, out_filename=None, initial_stats=None, last_weekend_workers=None):
-        # 1. Generujemy dane grafiku
-        sched, summ, hol = self.generate(year, month, employees, initial_stats, last_weekend_workers)
-        
+    def generate_and_save(self, year, month, employees=None, out_filename=None, initial_stats=None, last_weekend_workers=None, leaves=None):
+        # 1. Generujemy dane grafiku (tutaj przekazujemy leaves dalej)
+        sched, summ, hol = self.generate(year, month, employees, initial_stats, last_weekend_workers, leaves)
+
         # 2. Logika unikalnej nazwy pliku
         if out_filename is None:
             base_name = f"harm_{year}_{month:02d}"
