@@ -20,9 +20,9 @@ class Scheduler:
         self.special_rotation = ["P Barbara", "F Beata", "P Jacek", "D Krystian"]
 
         self.SHIFTS = {
-            "07-15": (7, 15, 8), "14-22": (14, 22, 8), "08-17": (8, 17, 9),
-            "07-14": (7, 14, 7), "07-13": (7, 13, 6), "07-12": (7, 12, 5),
-            "14-21": (14, 21, 7), "14-20": (14, 20, 6), "14-19": (14, 19, 5), "12-20": (12, 20, 8),
+            "07.00-15.00": (7, 15, 8), "14.00-22.00": (14, 22, 8), "08.00-17.00": (8, 17, 9),
+            "07.00-14.00": (7, 14, 7), "07.00-13.00": (7, 13, 6), "07.00-12.00": (7, 12, 5),
+            "14.00-21.00": (14, 21, 7), "14.00-20.00": (14, 20, 6), "14.00-19.00": (14, 19, 5), "12.00-20.00": (12, 20, 8),
             "OFF": (None, None, 0), "WN": (None, None, 0), "WS": (None, None, 0),
             "WP": (None, None, 0), "WW": (None, None, 0), "WH": (None, None, 0),
         }
@@ -80,13 +80,13 @@ class Scheduler:
             
             for e in employees:
                 if e in rotation:
-                    weekly_pref[w][e] = "14-22" if e == special_on_second else "07-15"
+                    weekly_pref[w][e] = "14.00-22.00" if e == special_on_second else "07.00-15.00"
                 else:
-                    weekly_pref[w][e] = "07-15" # Domyślnie rano
+                    weekly_pref[w][e] = "07.00-15.00" # Domyślnie rano
             
-            # 2. Pobieramy tylko JEDNĄ osobę z grupy normalnej na 12-20
+            # 2. Pobieramy tylko JEDNĄ osobę z grupy normalnej na 12.00-20.00
             worker_12_20 = next(afternoon_gen)
-            weekly_pref[w][worker_12_20] = "12-20"
+            weekly_pref[w][worker_12_20] = "12.00-20.00"
                 
         return weekly_pref
 
@@ -104,7 +104,7 @@ class Scheduler:
             forced_shift = None
         else:
             num_workers = 1 if nth_week % 2 != 0 else 2
-            forced_shift = "08-17" if (nth_week % 2 != 0) else None
+            forced_shift = "08.00-17.00" if (nth_week % 2 != 0) else None
 
         scored_candidates = []
         for e in schedule.keys():
@@ -148,8 +148,8 @@ class Scheduler:
         picked = [c["name"] for c in scored_candidates[:num_workers]]
         
         for i, e in enumerate(picked):
-            shift = forced_shift if forced_shift else ("07-15" if i == 0 else "14-22")
-            if is_hol and shift == "08-17": shift = "07-15" # Poprawka dla świąt
+            shift = forced_shift if forced_shift else ("07.00-15.00" if i == 0 else "14.00-22.00")
+            if is_hol and shift == "08.00-17.00": shift = "07.00-15.00" # Poprawka dla świąt
 
             schedule[e][d] = shift
             hours[e] += self.SHIFTS[shift][2]
@@ -172,7 +172,7 @@ class Scheduler:
         prev = d - timedelta(days=1)
         
         # 1. Najpierw obsadzamy tych, co mają mieć popołudnie wg planu
-        pm_workers = [e for e in schedule.keys() if weekly_pref[w][e] in ("14-22", "12-20")]
+        pm_workers = [e for e in schedule.keys() if weekly_pref[w][e] in ("14.00-22.00", "12.00-20.00")]
         for e in pm_workers:
             pref = weekly_pref[w][e]
             if self.rest_ok(schedule[e].get(prev, "OFF"), prev, pref, d):
@@ -191,12 +191,12 @@ class Scheduler:
                 hours[e] += 8
             else:
                 # Jeśli po weekendzie nie może przyjść rano, wymuszamy popołudnie.
-                # Zamiast tracić dzień (WN), wstawiamy go na 14-22 lub 12-20.
-                if self.rest_ok(prev_shift, prev, "14-22", d):
-                    schedule[e][d] = "14-22"
+                # Zamiast tracić dzień (WN), wstawiamy go na 14.00-22.00 lub 12.00-20.00.
+                if self.rest_ok(prev_shift, prev, "14.00-22.00", d):
+                    schedule[e][d] = "14.00-22.00"
                     hours[e] += 8
                 else:
-                    schedule[e][d] = "12-20"
+                    schedule[e][d] = "12.00-20.00"
                     hours[e] += 8
 
     def _assign_compensatory(self, employees, days, schedule, hours, week_of, last_sunhol_day):
@@ -211,14 +211,14 @@ class Scheduler:
         for e in sorted_emp:
             for d in days:
                 shift = schedule[e].get(d)
-                if shift not in ("07-15", "14-22", "08-17"): continue
+                if shift not in ("07.00-15.00", "14.00-22.00", "08.00-17.00"): continue
                 
                 comp = "WN" if d.weekday() == 6 else ("WS" if d in holidays else ("WP" if d.weekday() == 5 else None))
                 if not comp: continue
 
-                # Szukamy dnia do odbioru (musi mieć wpisaną zmianę roboczą 07-15 lub 14-22)
+                # Szukamy dnia do odbioru (musi mieć wpisaną zmianę roboczą 07.00-15.00 lub 14.00-22.00)
                 possible = [wd for wd in workdays if abs((wd - d).days) <= 7 
-                            and schedule[e][wd] in ("07-15", "14-22")]
+                            and schedule[e][wd] in ("07.00-15.00", "14.00-22.00")]
                 
                 if possible:
                     # Wybieramy dzień tak, by nie było za dużo odbiorów naraz w biurze
@@ -235,28 +235,31 @@ class Scheduler:
             diff = target_hours - hours[e]
             if diff == 0: continue
             
-            # Szukamy ostatniego dnia roboczego (gdzie jest zmiana z "-" np. 07-15)
+            # Szukamy ostatniego dnia roboczego (gdzie jest zmiana z "-" np. 07.00-15.00)
             for d in reversed(days):
                 current = schedule[e][d]
+                # Sprawdzamy czy to dzień roboczy i czy ma w nazwie kreskę (kod zmiany)
                 if d.weekday() < 5 and d not in polish_holidays(d.year) and "-" in current:
-                    # Pobieramy aktualny start (np. 7 z "07-15")
-                    sh = int(current.split('-')[0])
-                    # Obliczamy nową liczbę godzin dla tego dnia
-                    # Obecne godziny tego dnia to:
-                    current_hrs = self.SHIFTS[current][2]
-                    new_hrs = current_hrs + diff
-                    
-                    # Sprawdzamy czy nowa zmiana mieści się w limicie 8h i jest dodatnia
-                    if 0 < new_hrs <= 8:
-                        new_eh = sh + new_hrs
-                        # Tworzymy poprawny kod zmiany, np. "07-13"
-                        new_code = f"{sh:02d}-{new_eh:02d}"
+                    try:
+                        # split('-')[0] daje nam "14.00"
+                        # split('.')[0] wyciąga z tego samo "14"
+                        sh_str = current.split('-')[0].split('.')[0]
+                        sh = int(sh_str)
                         
-                        # Jeśli taki kod istnieje w naszych SHIFTS, używamy go
-                        if new_code in self.SHIFTS:
-                            schedule[e][d] = new_code
-                            hours[e] += diff
-                            break
+                        current_hrs = self.SHIFTS[current][2]
+                        new_hrs = current_hrs + diff
+                        
+                        if 0 < new_hrs <= 8:
+                            new_eh = sh + new_hrs
+                            # Tworzymy nowy kod w Twoim formacie: "14.00-20.00"
+                            new_code = f"{sh:02d}.00-{int(new_eh):02d}.00"
+                            
+                            if new_code in self.SHIFTS:
+                                schedule[e][d] = new_code
+                                hours[e] += diff
+                                break
+                    except (ValueError, IndexError):
+                        continue # Jeśli coś pójdzie nie tak z formatem, szukaj innego dnia
 
     def generate(self, year, month, employees=None, initial_stats=None, last_weekend_workers=None):
         self.days = month_days(year, month)
@@ -360,6 +363,19 @@ class Scheduler:
             ws.cell(row, 1, s["employee"]); ws.cell(row, 2, s["hours"])
             ws.cell(row, 3, s["saturdays"]); ws.cell(row, 4, s["sundays"]); ws.cell(row, 5, s["holidays"])
             row += 1
+
+        # --- DODAJ TO TUTAJ ---
+        for col_idx in range(1, 3 + len(self.days)):
+            col_letter = ws.cell(1, col_idx).column_letter
+            # Kolumna 1 i 2 (Pracownik i Typ) potrzebują więcej miejsca
+            if col_idx == 1:
+                ws.column_dimensions[col_letter].width = 10.72  # Pracownik (trochę szerszy)
+            elif col_idx == 2:
+                ws.column_dimensions[col_letter].width = 10.5  # Typ danych
+            else:
+                # Wartość 13.43 w Excelu odpowiada zazwyczaj dokładnie 120 pikselom
+                ws.column_dimensions[col_letter].width = 10.3
+
         wb.save(filename)
 
     def generate_and_save(self, year, month, employees=None, out_filename=None, initial_stats=None, last_weekend_workers=None):
