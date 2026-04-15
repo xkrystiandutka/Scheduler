@@ -3,74 +3,58 @@ from datetime import datetime, timedelta, date
 from collections import defaultdict, Counter
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
-from openpyxl.utils import get_column_letter
 from .utils import month_days, polish_holidays
 import os
 
-
 class Scheduler:
-    """
-    Scheduler z pełnym odbiorem za pracę w soboty/niedziele/święta.
-    - 16h przerwy między zmianami
-    - Odbiory w dni robocze
-    - Weekend: 1 osoba 07-15, 1 osoba 14-22
-    - Dni robocze: max 3 osoby na 14-22
-    - Sprawiedliwy przydział WS/WN/WP
-    """
-    MIN_GAP_DAYS = 7
-    MAX_SATURDAY = 2
-    MAX_SUNDAY = 2
-    MAX_HOLIDAY = 2
-
     def __init__(self, seed=None):
-        self.seed = seed
         if seed is not None:
             random.seed(seed)
-        self.employees = [
-            "F Tomasz","F Krzysztof","S Sławomir","G Artur",
-            "K Zbigniew","M Leszek","M Zbigniew","W Magdalena",
-            "D Janusz","S Renata"
+
+        # 1. Definiujemy grupy
+        self.special_rotation_2 = ["T Marek", "N Wojciech", "K Hubert"]
+        self.special_rotation = ["P Barbara", "F Beata", "P Jacek", "D Krystian"]
+        
+        # 2. Definiujemy "zwykłych" pracowników
+        normal_staff = [
+            "F Tomasz", "F Krzysztof", "S Sławomir", "G Artur",
+            "M Zbigniew", "W Magdalena", "D Janusz"
         ]
+
+        # 3. Łączymy w poprawnej kolejności: Zwykli -> Grupa 2 -> Grupa 1
+        # Dzięki temu w Excelu Marek będzie pod Januszem, ale przed Barbarą.
+        self.employees = normal_staff + self.special_rotation_2 + self.special_rotation
+
+        # ... reszta słowników bez zmian ...
         self.SHIFTS = {
-            "07-15": (7,15,8),
-            "14-22": (14,22,8),
-            "08-20": (8,20,12),  # <<< dodane
-            "09-21": (9,21,12),  # <<< dodane (opcjonalnie)
-            "09-19": (9,19,10),  # <<< dodane (opcjonalnie)
-            "OFF": (None,None,0),
-            "WN": (None,None,0),
-            "WS": (None,None,0),
-            "WP": (None,None,0),
-            "WW": (None,None,0),
-            "WH": (None,None,0),
+            "07.00-15.00": (7, 15, 8), "14.00-22.00": (14, 22, 8), "08.00-17.00": (8, 17, 9),
+            "07.00-14.00": (7, 14, 7), "07.00-13.00": (7, 13, 6), "07.00-12.00": (7, 12, 5), 
+            "13.00-21.00": (13, 21, 8), "08.00-16.00": (8, 16, 8),
+            "14.00-21.00": (14, 21, 7), "14.00-20.00": (14, 20, 6), "14.00-19.00": (14, 19, 5), 
+            "12.00-20.00": (12, 20, 8),
+            "OFF": (None, None, 0), "WN": (None, None, 0), "WS": (None, None, 0),
+            "WP": (None, None, 0), "WW": (None, None, 0), "WH": (None, None, 0),
         }
-        self.MIN_SECOND_SHIFT = 1
-        self.MAX_SECOND_SHIFT = 3
-        self.MIN_REST_HOURS = 16
-        self.TARGET_HOURS = 168
         self.COLORS = {
-            "saturday":"FF892E","sunday":"FF892E","holiday":"CD3C32","header":"CD3C32"
+            "saturday": "FF892E", "sunday": "FF892E", "holiday": "CD3C32", "header": "CD3C32", "odbior": "92D050"
         }
 
     def shift_times(self, code, dt):
-        if code in ("OFF","WN","WS","WP") or code not in self.SHIFTS:
+        if code in ("OFF", "WN", "WS", "WP", "WH", "WW") or code not in self.SHIFTS:
             return None
         sh, eh, hrs = self.SHIFTS[code]
         start = datetime(dt.year, dt.month, dt.day, sh)
         end = datetime(dt.year, dt.month, dt.day, eh)
-        if eh <= sh:
-            end += timedelta(days=1)
+        if eh <= sh: end += timedelta(days=1)
         return start, end
 
     def rest_ok(self, prev_code, prev_date, next_code, next_date):
-        if prev_code in (None,"OFF","WN","WS","WP") or next_code in (None,"OFF","WN","WS","WP"):
+        if prev_code in (None, "OFF", "WN", "WS", "WP", "WH") or next_code in (None, "OFF", "WN", "WS", "WP", "WH"):
             return True
-        prev_times = self.shift_times(prev_code, prev_date)
-        next_times = self.shift_times(next_code, next_date)
-        if prev_times is None or next_times is None:
-            return True
-        delta = (next_times[0] - prev_times[1]).total_seconds() / 3600.0
-        return delta >= self.MIN_REST_HOURS
+        p_t = self.shift_times(prev_code, prev_date)
+        n_t = self.shift_times(next_code, next_date)
+        if not p_t or not n_t: return True
+        return (n_t[0] - p_t[1]).total_seconds() / 3600.0 >= 16
 
     def week_index(self, d):
         first = d.replace(day=1)
@@ -79,591 +63,395 @@ class Scheduler:
 
     def _make_weekly_pref(self, weeks, employees):
         weekly_pref = {}
-        n = len(employees)
-        for w in weeks:
-            emp_list = employees.copy()
-            random.shuffle(emp_list)
-            target_ii = max(1, round(n/3.5))
+        
+        rotation_1 = self.special_rotation 
+        rotation_2 = self.special_rotation_2 
+        
+        all_special = set(rotation_1) | set(rotation_2)
+        normal_candidates = [e for e in employees if e not in all_special]
+        random.shuffle(normal_candidates)
+
+        def get_next_afternoon_worker():
+            idx = 0
+            while True:
+                yield normal_candidates[idx % len(normal_candidates)]
+                idx += 1
+
+        afternoon_gen = get_next_afternoon_worker()
+        sorted_weeks = sorted(weeks)
+
+        # Sprawdzamy długość pierwszego tygodnia
+        first_week_days = [d for d in self.days if self.week_index(d) == sorted_weeks[0]]
+        work_days_in_first_week = len([d for d in first_week_days if d.weekday() < 5])
+
+        for i, w in enumerate(sorted_weeks):
             weekly_pref[w] = {}
-            for i,e in enumerate(emp_list):
-                weekly_pref[w][e] = "14-22" if i < target_ii else "07-15"
+            
+            # Logika "krótkiego tygodnia"
+            if work_days_in_first_week < 3:
+                rot_idx = (i - 1) if i > 0 else 0
+            else:
+                rot_idx = i
+
+            # --- 1. PRZYPISANIE GRUPY 2 (MAREK I INNI) - PIERWSZA KOLEJNOŚĆ ---
+            special_2_person = rotation_2[rot_idx % len(rotation_2)]
+            for e in rotation_2:
+                if e in employees:
+                    # 13-21 dla wybranego, reszta 08-16
+                    weekly_pref[w][e] = "13.00-21.00" if e == special_2_person else "08.00-16.00"
+
+            # --- 2. PRZYPISANIE GRUPY 1 (BARBARA I INNI) ---
+            special_1_person = rotation_1[rot_idx % len(rotation_1)]
+            for e in rotation_1:
+                if e in employees:
+                    weekly_pref[w][e] = "14.00-22.00" if e == special_1_person else "07.00-15.00"
+
+            # --- 3. PRZYPISANIE GRUPY NORMALNEJ (TOMASZ I INNI) ---
+            worker_12_20 = next(afternoon_gen)
+            for e in normal_candidates:
+                if e in employees:
+                    weekly_pref[w][e] = "12.00-20.00" if e == worker_12_20 else "07.00-15.00"
+                
         return weekly_pref
-    
-    def consecutive_12h_days(self, schedule, employee, current_day):
-        """
-        Liczy ile poprzednich dni z rzędu pracownik miał 12h zmiany
-        """
-        count = 0
-        day = current_day - timedelta(days=1)
-        while day in schedule[employee] and schedule[employee][day] in ("08-20","09-21"):
-            count += 1
-            day -= timedelta(days=1)
-        return count
 
-
-
-    def assign_special_employee(self, employee, year, month, other_employees):
-        days = month_days(year, month)
-        schedule = {employee: {d: "OFF" for d in days}}
-        worked_hours = {employee: 0}
-        return schedule, worked_hours
-    
-
-    def _assign_weekend_day(self, d, weekly_pref, week_of, schedule, hours, stats, last_sunhol_day, weekend_assigned=None):
-        """
-        Przydziela zmiany weekendowe i świąteczne:
-        - max 2 osoby na dzień
-        - żaden pracownik nie może pracować w obu dniach weekendu
-        - niedziela/święto: nie więcej niż raz na 7 dni przed lub po
-        """
-        if weekend_assigned is None:
-            weekend_assigned = set()
-
+    def _assign_weekend_day(self, d, weekly_pref, week_of, schedule, hours, stats, 
+                            last_sun_day, last_hol_day, last_sat_day, assigned_today):
+        # 1. Definiujemy osoby, które MAJĄ ZAKAZ pracy w weekendy i święta
+        forbidden_employees = set(self.special_rotation_2) | set(self.special_rotation)
+        
         weekday = d.weekday()
         is_hol = d in polish_holidays(d.year)
+        
+        # Ustalamy numer tygodnia w miesiącu, aby wiedzieć czy dyżur jest 1- czy 2-osobowy
+        sorted_weeks = sorted(set(week_of.values()))
+        nth_week = sorted_weeks.index(week_of[d]) + 1
+        
+        # Logika obsady: Święta = 2 osoby, weekendy co drugi tydzień 2 osoby, inaczej 1 osoba
+        if is_hol:
+            num_workers = 2
+            forced_shift = None
+        else:
+            num_workers = 1 if nth_week % 2 != 0 else 2
+            forced_shift = "08.00-17.00" if (nth_week % 2 != 0) else None
 
-        # Kandydaci: nie pracowali już w tym weekendzie i nie złamali 7-dniowego zakazu
-        candidates = []
+        scored_candidates = []
         for e in schedule.keys():
-            if e in weekend_assigned:
+            # BLOKADA: Jeśli pracownik jest w grupie specjalnej 1 lub 2, pomiń go
+            if e in forbidden_employees:
                 continue
-            last = last_sunhol_day.get(e)
-            if last and abs((d - last).days) < 7:  # blokada 7 dni przed/po
+            
+            # Jeśli pracownik ma już przypisane coś na dziś (np. urlop WW)
+            if schedule[e].get(d) == "WW" or e in assigned_today:
                 continue
-            candidates.append(e)
-
-        # jeśli za mało kandydatów, uzupełniamy pozostałych, żeby zawsze były 2 osoby
-        if len(candidates) < 2:
-            for e in schedule.keys():
-                if e not in candidates and e not in weekend_assigned:
-                    candidates.append(e)
-                if len(candidates) >= 2:
-                    break
-
-        # sortowanie kandydatów po statystykach
-        candidates.sort(key=lambda e: (stats[e]["weekends"], stats[e]["sundays"], stats[e]["holidays"], random.random()))
-        picked = candidates[:2]
-
-        # przydzielamy zmiany
-        for i, e in enumerate(picked):
-            # blokada dla Renaty 12h
-            if e == "S Renata" and self.consecutive_12h_days(schedule, "S Renata", d) < 2:
-                schedule[e][d] = "08-20"
-                hours[e] += 12
-            else:
-                if weekday == 5:  # sobota
-                    schedule[e][d] = "07-15" if i == 0 else "14-22"
-                elif weekday == 6 or is_hol:  # niedziela lub święto
-                    schedule[e][d] = "07-15" if i == 0 else "14-22"
-            # aktualizacja godzin i statystyk
-            shift = schedule[e][d]
-            hours[e] += self.SHIFTS[shift][2] if shift not in ("WN","WS","WP","WH") else 0
-            stats[e]["weekends"] += 1
+            
+            # Blokada: Nie pracujemy w niedzielę, jeśli była pracująca sobota (zasada odpoczynku)
             if weekday == 6:
-                stats[e]["sundays"] += 1
+                yesterday = d - timedelta(days=1)
+                if schedule[e].get(yesterday) not in ("OFF", "WN", "WS", "WP", "WH"):
+                    continue
+
+            # Wybór odpowiedniej pamięci i limitów dla punktacji
+            if is_hol:
+                last = last_hol_day.get(e)
+                limit = 10 
+                work_count = stats[e]["holidays"]
+            elif weekday == 6:
+                last = last_sun_day.get(e)
+                limit = 21 # Minimum 3 tygodnie odstępu dla niedziel
+                work_count = stats[e]["sundays"]
+            else: # Sobota
+                last = last_sat_day.get(e)
+                limit = 12
+                work_count = stats[e]["saturdays"]
+                
+            days_since = (d - last).days if last else 999
+            
+            # Punktacja (score): 
+            # (0, ...) - osoby, które odpoczywały powyżej limitu (priorytet)
+            # (1, ...) - osoby, które muszą wejść w kolejkę ratunkową
+            if days_since < limit:
+                score = (1, -days_since, work_count)
+            else:
+                score = (0, work_count, -days_since)
+
+            scored_candidates.append({"name": e, "score": score})
+
+        # Sortowanie kandydatów według punktacji i wybór najlepszych
+        scored_candidates.sort(key=lambda x: x["score"])
+        picked = [c["name"] for c in scored_candidates[:num_workers]]
+        
+        # Przypisywanie zmian wybranym osobom
+        for i, e in enumerate(picked):
+            # Ustalanie kodu zmiany (08-17 lub rano/popołudnie)
+            shift = forced_shift if forced_shift else ("07.00-15.00" if i == 0 else "14.00-22.00")
+            
+            # Korekta dla świąt (nie używamy 08-17 w święta)
+            if is_hol and shift == "08.00-17.00": 
+                shift = "07.00-15.00"
+
+            schedule[e][d] = shift
+            hours[e] += self.SHIFTS[shift][2]
+            
+            # Aktualizacja statystyk i dat ostatniej pracy
             if is_hol:
                 stats[e]["holidays"] += 1
-
-            last_sunhol_day[e] = d
-            weekend_assigned.add(e)
-
-
+                last_hol_day[e] = d
+            elif weekday == 6:
+                stats[e]["sundays"] += 1
+                last_sun_day[e] = d
+            elif weekday == 5:
+                stats[e]["saturdays"] += 1
+                last_sat_day[e] = d
+                
+            assigned_today.add(e)
 
     def _assign_weekday(self, d, weekly_pref, week_of, schedule, hours, stats):
         w = week_of[d]
-        cand = list(weekly_pref[w].keys())
-        random.shuffle(cand)
-        desired_ii = [e for e in cand if weekly_pref[w][e]=="14-22"]
-        if len(desired_ii) > self.MAX_SECOND_SHIFT:
-            desired_ii = sorted(desired_ii, key=lambda x:(stats[x]["weekends"], stats[x]["sundays"]))[:self.MAX_SECOND_SHIFT]
+        prev = d - timedelta(days=1)
+        
+        # 1. Najpierw definiujemy listę pracowników na popołudnie
+        pm_workers = [e for e in schedule.keys() if weekly_pref[w][e] in ("14.00-22.00", "12.00-20.00", "13.00-21.00")]        
+        
+        # 2. Teraz sprawdzamy urlopy i przypisujemy zmiany
+        for e in pm_workers:
+            if schedule[e].get(d) == "WW": 
+                continue # Pomiń jeśli ma urlop
+                
+            pref = weekly_pref[w][e]
+            if self.rest_ok(schedule[e].get(prev, "OFF"), prev, pref, d):
+                schedule[e][d] = pref
+                hours[e] += 8
 
-        for e in cand:
-            if e == "S Renata":   # 🔴 KLUCZOWE
-                continue
-            if schedule[e][d] == "WW":  # <-- ochrona przed nadpisaniem
-                continue
-            target = "14-22" if e in desired_ii else "07-15"
-            prev = d - timedelta(days=1)
+        # 2. Reszta (w tym ci po niedzieli)
+        for e in schedule.keys():
+            if schedule[e][d] != "OFF": continue
+            
+            target = weekly_pref[w][e]
             prev_shift = schedule[e].get(prev, "OFF")
-            if not self.rest_ok(prev_shift, prev, target, d):
-                if schedule[e][d] == "WW":  # <-- ochrona przed nadpisaniem
-                    continue
-                other = "07-15" if target=="14-22" else "14-22"
-                if self.rest_ok(prev_shift, prev, other, d):
-                    if schedule[e][d] == "WW":  # <-- ochrona przed nadpisaniem
-                        continue
-                    schedule[e][d] = other
-                    hours[e] += self.SHIFTS[other][2]
-                else:
-                    schedule[e][d] = "OFF"
-            else:
+
+            if self.rest_ok(prev_shift, prev, target, d):
                 schedule[e][d] = target
-                hours[e] += self.SHIFTS[target][2]
+                hours[e] += 8
+            else:
+                # Jeśli po weekendzie nie może przyjść rano, wymuszamy popołudnie.
+                # Zamiast tracić dzień (WN), wstawiamy go na 14.00-22.00 lub 12.00-20.00.
+                if self.rest_ok(prev_shift, prev, "14.00-22.00", d):
+                    schedule[e][d] = "14.00-22.00"
+                    hours[e] += 8
+                else:
+                    schedule[e][d] = "12.00-20.00"
+                    hours[e] += 8
 
-
-   
     def _assign_compensatory(self, employees, days, schedule, hours, week_of, last_sunhol_day):
+        """Poprawione odbiory: nie zabierają dni roboczych, jeśli ktoś ma mało godzin."""
         holidays = set(polish_holidays(days[0].year))
-
-        # dni robocze do odbiorów
-        workdays = [
-            d for d in days
-            if d.weekday() < 5 and d not in holidays
-        ]
-
-        # ile odbiorów jest w danym dniu
+        workdays = [d for d in days if d.weekday() < 5 and d not in holidays]
         day_load = Counter()
 
-        for e in employees:
+        # Sortujemy pracowników tak, by ci z największą liczbą godzin pierwsi dostawali odbiory
+        sorted_emp = sorted(employees, key=lambda x: hours[x], reverse=True)
+
+        for e in sorted_emp:
             for d in days:
+                # Jeśli w dany dzień pracownik ma WW, to nie wypracował w nim odbioru!
+                if schedule[e].get(d) == "WW": continue
+
                 shift = schedule[e].get(d)
-                if shift not in ("07-15", "14-22"):
-                    continue
-
-                # typ odbioru
-                if e == "S Renata" and shift == "08-20" and d.weekday() < 5:
-                    comp = "WH"
-                elif d.weekday() == 6:        # niedziela
-                    comp = "WN"
-                elif d in holidays:         # święto
-                    comp = "WS"
-                elif d.weekday() == 5:      # sobota
-                    comp = "WP"
-                else:
-                    continue
-
-                # możliwe dni odbioru
-                possible = [
-                    wd for wd in workdays
-                    if wd not in holidays
-                    and wd.weekday() < 5
-                    and schedule[e].get(wd) in ("OFF", "07-15", "14-22")
-                    and abs((wd - d).days) <= 7                           # max 7 dni przed lub po
-
-                ]
-
-
-                if not possible:
-                    continue
-
-                # wybór dnia: najmniej odbiorów
-                possible.sort(
-                    key=lambda wd: (day_load[wd], random.random())
-                )
-
-                cd = possible[0]
-                schedule[e][cd] = comp
-                day_load[cd] += 1
-
-
-
-    def _balance_hours(self, employees, days, schedule, hours):
-        target = self.TARGET_HOURS
-        max_iters = 5000
-        it = 0
-        improved = True
-
-        while it < max_iters and improved:
-            it += 1
-            improved = False
-
-            over = sorted(
-                [e for e in employees if hours[e] > target],
-                key=lambda x: hours[x] - target,
-                reverse=True
-            )
-            under = sorted(
-                [e for e in employees if hours[e] < target],
-                key=lambda x: target - hours[x],
-                reverse=True
-            )
-
-            if not over or not under:
-                break
-
-            a = over[0]
-            b = under[0]
-
-            # ❌ NIE BALANSUJEMY RENATY
-            if a == "S Renata" or b == "S Renata":
-                break
-
-            random.shuffle(days)
-
-            for d in days:
-                sa = schedule[a].get(d)
-                sb = schedule[b].get(d)
-
-                if sa in ("07-15","14-22") and sb == "OFF":
-                    prev_b = d - timedelta(days=1)
-                    if not self.rest_ok(schedule[b].get(prev_b,"OFF"), prev_b, sa, d):
-                        continue
-
-                    ha = hours[a] - self.SHIFTS[sa][2]
-                    hb = hours[b] + self.SHIFTS[sa][2]
-
-                    if abs(ha - target) < abs(hours[a] - target) and \
-                    abs(hb - target) < abs(hours[b] - target):
-
-                        schedule[b][d] = sa
-                        schedule[a][d] = "OFF"
-                        hours[a] = ha
-                        hours[b] = hb
-                        improved = True
-                        break
-
-                if sb in ("07-15","14-22") and sa == "OFF":
-                    prev_a = d - timedelta(days=1)
-                    if not self.rest_ok(schedule[a].get(prev_a,"OFF"), prev_a, sb, d):
-                        continue
-
-                    ha = hours[a] + self.SHIFTS[sb][2]
-                    hb = hours[b] - self.SHIFTS[sb][2]
-
-                    if abs(ha - target) < abs(hours[a] - target) and \
-                    abs(hb - target) < abs(hours[b] - target):
-
-                        schedule[a][d] = sb
-                        schedule[b][d] = "OFF"
-                        hours[a] = ha
-                        hours[b] = hb
-                        improved = True
-                        break
-
-
-    def _assign_end_month(self, days, schedule, hours, stats):
-        """
-        UZUPEŁNIA obsadę ostatnich dni miesiąca (weekend / święto),
-        ale:
-        - NIGDY nie przekracza 2 osób
-        - NIE nadpisuje istniejących zmian
-        - NIE dokłada ludzi, jeśli już są 2
-        """
-
-        holidays = set(polish_holidays(days[0].year))
-
-        # bierzemy tylko OSTATNI dzień miesiąca
-        end_days = [days[-1]]
-
-        for d in end_days:
-            weekday = d.weekday()
-            is_hol = d in holidays
-
-            # interesują nas tylko sobota / niedziela / święto
-            if weekday < 5 and not is_hol:
-                continue
-
-            # 🔴 KROK 1: sprawdzamy kto JUŻ pracuje
-            working = [
-                e for e in schedule
-                if schedule[e][d] in ("07-15", "14-22", "08-20")
-            ]
-
-            # 🔴 KROK 2: jeśli już są 2 osoby → NIC NIE ROBIMY
-            if len(working) >= 2:
-                continue
-
-            # 🔴 KROK 3: ustalamy jakie zmiany są już zajęte
-            assigned_shifts = [schedule[e][d] for e in working]
-
-            # 🔴 KROK 4: kandydaci tylko z OFF
-            candidates = sorted(
-                [e for e in schedule if schedule[e][d] == "OFF"],
-                key=lambda e: (
-                    stats[e]["weekends"],
-                    stats[e]["sundays"],
-                    stats[e]["holidays"],
-                    random.random()
-                )
-            )
-
-            # 🔴 KROK 5: uzupełniamy TYLKO do 2 osób
-            for e in candidates:
-                if len(assigned_shifts) >= 2:
-                    break
-
-                # wybór zmiany – brakująca
-                shift = "07-15" if "07-15" not in assigned_shifts else "14-22"
-
-                schedule[e][d] = shift
-                hours[e] += self.SHIFTS[shift][2]
-
-                stats[e]["weekends"] += 1
-                if weekday == 6:
-                    stats[e]["sundays"] += 1
-                if is_hol:
-                    stats[e]["holidays"] += 1
-
-                assigned_shifts.append(shift)
-
-    def _assign_renata_weekdays(self, days, schedule, hours, holidays):
-        workdays = [d for d in days if d.weekday() < 5 and d not in holidays]
-        target = self.renata_target_hours
-
-        # 1️⃣ policz poprawną kombinację
-        n_12h = target // 12
-        rest = target - n_12h * 12
-
-        if rest == 4:
-            n_12h -= 1
-            rest += 12
-
-        n_8h = rest // 8
-
-        # wyczyść dni robocze
-        for d in workdays:
-            schedule["S Renata"][d] = "OFF"
-
-        last_12h = None
-
-        # 2️⃣ przydziel zmiany
-        for d in workdays:
-            if n_12h > 0:
-                if last_12h and (d - last_12h).days == 1:
-                    if n_8h > 0:
-                        schedule["S Renata"][d] = "07-15"
-                        hours["S Renata"] += 8
-                        n_8h -= 1
-                        last_12h = None
-                else:
-                    schedule["S Renata"][d] = "08-20"
-                    hours["S Renata"] += 12
-                    n_12h -= 1
-                    last_12h = d
-
-            elif n_8h > 0:
-                schedule["S Renata"][d] = "07-15"
-                hours["S Renata"] += 8
-                n_8h -= 1
-
-        # 3️⃣ reszta dni roboczych = WH
-        for d in workdays:
-            if schedule["S Renata"][d] == "OFF":
-                schedule["S Renata"][d] = "WH"
-
-
-    def _assign_wh_days(self, schedule, employee, days, holidays):
-        target = self.renata_target_hours
-
-        def current_hours():
-            return sum(
-                self.SHIFTS.get(schedule[employee][d], (0,0,0))[2]
-                for d in days
-            )
-
-        excess = current_hours() - target
-        if excess <= 0:
-            print(f">>> {employee} - brak nadmiaru godzin, nie dodajemy WH")
-            return
-
-        # kandydaci: dni robocze z pracą
-        candidates = [
-            d for d in days
-            if d.weekday() < 5
-            and d not in holidays
-            and schedule[employee][d] in ("08-20", "07-15", "14-22")
-        ]
-
-        # losowo tasujemy
-        random.shuffle(candidates)
-
-        # sortujemy: najpierw 12h, potem 8h
-        candidates.sort(key=lambda d: -self.SHIFTS[schedule[employee][d]][2])
-
-        wh_per_week = defaultdict(int)
-        wh_assigned = []
-
-        for d in candidates:
-            if excess <= 0:
-                break
-
-            # sprawdzamy, czy poprzedni dzień nie jest WH
-            prev_day = d - timedelta(days=1)
-            next_day = d + timedelta(days=1)
-            if (prev_day in schedule[employee] and schedule[employee][prev_day] == "WH") or \
-            (next_day in schedule[employee] and schedule[employee][next_day] == "WH"):
-                continue  # pomijamy, żeby mieć przerwę 1 dnia
-
-            w = self.week_index(d)
-            if wh_per_week[w] >= 2:
-                continue
-
-            hrs = self.SHIFTS[schedule[employee][d]][2]
-
-            schedule[employee][d] = "WH"
-            wh_per_week[w] += 1
-            wh_assigned.append(d)
-            excess -= hrs
-
-
-
-    def generate(self, year, month, employees=None):
+                if shift not in ("07.00-15.00", "14.00-22.00", "08.00-17.00"): continue
+                
+                comp = "WN" if d.weekday() == 6 else ("WS" if d in holidays else ("WP" if d.weekday() == 5 else None))
+                if not comp: continue
+
+                # Szukamy dnia do odbioru (musi mieć wpisaną zmianę roboczą 07.00-15.00 lub 14.00-22.00)
+                possible = [wd for wd in workdays if abs((wd - d).days) <= 7 
+                            and schedule[e][wd] in ("07.00-15.00", "14.00-22.00")
+                            and schedule[e][wd] != "WW"] # Nie zabieraj dnia, który już jest urlopem!
+                
+                if possible:
+                    # Wybieramy dzień tak, by nie było za dużo odbiorów naraz w biurze
+                    possible.sort(key=lambda wd: (day_load[wd], random.random()))
+                    cd = possible[0]
+                    # Zamieniamy pracę na odbiór (godziny spadają)
+                    old_shift_hrs = self.SHIFTS[schedule[e][cd]][2]
+                    schedule[e][cd] = comp
+                    hours[e] -= old_shift_hrs
+                    day_load[cd] += 1
+
+    def _adjust_last_day_hours(self, days, schedule, hours, target_hours=160):
+        for e in schedule:
+            diff = target_hours - hours[e]
+            if diff == 0: continue
+            
+            # Szukamy ostatniego dnia roboczego (gdzie jest zmiana z "-" np. 07.00-15.00)
+            for d in reversed(days):
+                current = schedule[e][d]
+                # Sprawdzamy czy to dzień roboczy i czy ma w nazwie kreskę (kod zmiany)
+                if d.weekday() < 5 and d not in polish_holidays(d.year) and "-" in current:
+                    try:
+                        # split('-')[0] daje nam "14.00"
+                        # split('.')[0] wyciąga z tego samo "14"
+                        sh_str = current.split('-')[0].split('.')[0]
+                        sh = int(sh_str)
+                        
+                        current_hrs = self.SHIFTS[current][2]
+                        new_hrs = current_hrs + diff
+                        
+                        if 0 < new_hrs <= 8:
+                            new_eh = sh + new_hrs
+                            # Tworzymy nowy kod w Twoim formacie: "14.00-20.00"
+                            new_code = f"{sh:02d}.00-{int(new_eh):02d}.00"
+                            
+                            if new_code in self.SHIFTS:
+                                schedule[e][d] = new_code
+                                hours[e] += diff
+                                break
+                    except (ValueError, IndexError):
+                        continue # Jeśli coś pójdzie nie tak z formatem, szukaj innego dnia
+
+    def generate(self, year, month, employees=None, initial_stats=None, last_weekend_workers=None, leaves=None):
+        self.days = month_days(year, month)
         if employees is None:
-            employees = self.employees.copy()
-        days = month_days(year, month)
-        holidays = polish_holidays(year)
-
-        workdays = [
-            d for d in days
-            if d.weekday() < 5 and d not in holidays
-        ]
-
-        # teraz target Renaty
-        self.renata_target_hours = len(workdays) * 8
-
-
-        schedule = {e:{d:"OFF" for d in days} for e in employees}
-        hours = {e:0 for e in employees}
-        week_of = {d:self.week_index(d) for d in days}
-        weeks = sorted(set(week_of.values()))
-        last_sunhol_week = {e: None for e in employees}
-        stats = {e:{"weekends":0,"sundays":0,"holidays":0} for e in employees}
-
-        weekly_pref = self._make_weekly_pref(weeks, employees)
-
-        # 1️⃣ Przypisanie weekendów i świąt
-        for d in days:
-            weekday = d.weekday()
-            if weekday in (5,6) or d in holidays:
-                self._assign_weekend_day(d, weekly_pref, week_of, schedule, hours, stats, last_sunhol_week)
-            else:
-                self._assign_weekday(d, weekly_pref, week_of, schedule, hours, stats)
-
-        self._assign_renata_weekdays(days, schedule, hours, holidays)
+                    employees = self.employees 
         holidays = set(polish_holidays(year))
+        schedule = {e: {d: "OFF" for d in self.days} for e in employees}
 
+        # --- NOWA LOGIKA: WPISYWANIE URLOPÓW NA START ---
+        if leaves:
+            for emp_name, days_off in leaves.items():
+                if emp_name in schedule:
+                    for d_num in days_off:
+                        # Znajdujemy konkretną datę w self.days
+                        target_date = date(year, month, d_num)
+                        if target_date in schedule[emp_name]:
+                            schedule[emp_name][target_date] = "WW"
 
-        # 2️⃣ Ostatni dzień miesiąca: zapewnienie 2 osób, przydzielenie wcześniejszych odbiorów
-        self._assign_end_month(days, schedule, hours, stats)
+        hours = {e: 0 for e in employees}
+        week_of = {d: self.week_index(d) for d in self.days}
+        
+        stats = {e: (initial_stats[e].copy() if initial_stats and e in initial_stats else {"saturdays":0, "sundays":0, "holidays":0}) for e in employees}
 
-        # 3️⃣ Kompensatory za wszystkie weekendy i święta
-        self._assign_compensatory(employees, days, schedule, hours, week_of, last_sunhol_week)
-        self._assign_wh_days(schedule, "S Renata", days, holidays)
+        # --- 1. INICJALIZACJA TRZECH OSOBNYCH KOLEJEK ---
+        # Data "daleka" (40 dni wstecz), żeby system nie blokował nikogo na starcie bez powodu
+        far_past = self.days[0] - timedelta(days=40)
+        # Data "niedzielna" (1 dzień wstecz), żeby zablokować konkretne osoby
+        last_sunday_of_april = self.days[0] - timedelta(days=1) 
 
-        # 4️⃣ Podsumowanie godzin
-        working_shifts = ("07-15","14-22","08-20")  # wszystkie zmiany normalne
+        last_sun_day = {}
+        for e in employees:
+            if last_weekend_workers and e in last_weekend_workers:
+                # Jeśli był w ostatni weekend, wpisujemy mu ostatnią niedzielę kwietnia
+                # To go zablokuje w niedzielach na 21 dni od tej daty
+                last_sun_day[e] = last_sunday_of_april
+            else:
+                last_sun_day[e] = far_past
 
+        # Święta i soboty startują z "czystym kontem" dla wszystkich
+        last_hol_day = {e: far_past for e in employees}
+        last_sat_day = {e: far_past for e in employees}
 
+        weekly_pref = self._make_weekly_pref(set(week_of.values()), employees)
+
+        # --- 2. GENEROWANIE GRAFIKU (WEEKENDY I ŚWIĘTA) ---
+        assigned_today = defaultdict(set)
+        for d in self.days:
+            if d.weekday() in (5, 6) or d in holidays:
+                # Przekazujemy wszystkie 3 słowniki do funkcji przypisującej
+                self._assign_weekend_day(
+                    d, weekly_pref, week_of, schedule, hours, stats, 
+                    last_sun_day, last_hol_day, last_sat_day, assigned_today[d]
+                )
+        
+        # --- 3. DNI ROBOCZE I ODBIORY ---
+        for d in self.days:
+            if d.weekday() < 5 and d not in holidays: 
+                self._assign_weekday(d, weekly_pref, week_of, schedule, hours, stats)
+        
+        # Odbiorami zajmujemy się na końcu (używamy last_sun_day jako bazy)
+        self._assign_compensatory(employees, self.days, schedule, hours, week_of, last_sun_day)
+        self._adjust_last_day_hours(self.days, schedule, hours)
+
+        # --- 4. PODSUMOWANIE ---
         summary = []
         for e in employees:
-            hrs = sum(
-                0 if schedule[e][d] in ("OFF","WN","WS","WP", "WW", "WH") else self.SHIFTS[schedule[e][d]][2]
-                for d in schedule[e]
-            )
+            act_h = sum(self.SHIFTS.get(schedule[e][d], (0,0,0))[2] for d in self.days if schedule[e][d] not in ("WN","WS","WP","WH","OFF","WW"))
             summary.append({
-                "employee": e,
-                "hours": hrs,
-                "weekends": sum(1 for d in schedule[e] if d.weekday() >= 5 and schedule[e][d] in working_shifts),
-                "sundays": sum(1 for d in schedule[e] if d.weekday() == 6 and schedule[e][d] in working_shifts),
-                "holidays": sum(1 for d in schedule[e] if d in polish_holidays(d.year) and schedule[e][d] in working_shifts),
+                "employee": e, 
+                "hours": act_h, 
+                "saturdays": stats[e]["saturdays"], 
+                "sundays": stats[e]["sundays"], 
+                "holidays": stats[e]["holidays"]
             })
-
+            
         return schedule, summary, holidays
 
+    def save_xlsx(self, schedule, summary, holidays, year, month, filename):
+        wb = Workbook(); ws = wb.active; ws.title = f"{calendar.month_name[month]}_{year}"
+        border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+        center = Alignment(horizontal="center", vertical="center"); bold = Font(bold=True)
+        sat_f = PatternFill("solid", fgColor=self.COLORS["saturday"]); sun_f = PatternFill("solid", fgColor=self.COLORS["sunday"])
+        hol_f = PatternFill("solid", fgColor=self.COLORS["holiday"]); odb_f = PatternFill("solid", fgColor=self.COLORS["odbior"])
 
-    def save_xlsx(self, schedule, summary, holidays, year, month, filename=None):
-        if filename is None:
-            filename = f"harm_{year}_{month:02d}.xlsx"
-        wb = Workbook()
-        ws = wb.active
-        ws.title = f"{calendar.month_name[month]}_{year}"
-        days = sorted(next(iter(schedule.values())).keys())
-        nd = len(days)
+        ws.cell(1, 1, "Pracownik").font = bold; ws.cell(1, 2, "Typ danych").font = bold
+        for i, d in enumerate(self.days):
+            c = 3 + i; ws.cell(1, c, d.day).font = bold
+            ws.cell(2, c, calendar.day_name[d.weekday()][:2]).font = bold
+            if d in holidays: ws.cell(1, c).fill = hol_f; ws.cell(2, c).fill = hol_f
+            elif d.weekday() == 5: ws.cell(1, c).fill = sat_f; ws.cell(2, c).fill = sat_f
+            elif d.weekday() == 6: ws.cell(1, c).fill = sun_f; ws.cell(2, c).fill = sun_f
 
-        border = Border(left=Side(style="thin"),right=Side(style="thin"),
-                        top=Side(style="thin"),bottom=Side(style="thin"))
-        center = Alignment(horizontal="center",vertical="center")
-        bold = Font(bold=True)
-        sat_fill = PatternFill("solid", fgColor=self.COLORS["saturday"])
-        sun_fill = PatternFill("solid", fgColor=self.COLORS["sunday"])
-        hol_fill = PatternFill("solid", fgColor=self.COLORS["holiday"])
-        hdr_fill = PatternFill("solid", fgColor=self.COLORS["header"])
-        odb_fill = PatternFill("solid", fgColor="92D050")  # zielony dla odbiorów
+        row = 3
+        for e in schedule:
+            ws.cell(row, 1, e).font = bold; ws.cell(row, 2, "Godziny"); ws.cell(row+1, 2, "Liczba h")
+            for i, d in enumerate(self.days):
+                c = 3 + i; val = schedule[e][d]
+                cell_code = ws.cell(row, c, val); cell_code.alignment = center; cell_code.border = border
+                if val in ("WN", "WS", "WP", "WH", "WW"): cell_code.fill = odb_f
+                elif d in holidays: cell_code.fill = hol_f
+                elif d.weekday() == 5: cell_code.fill = sat_f
+                elif d.weekday() == 6: cell_code.fill = sun_f
+                
+                h_val = self.SHIFTS.get(val, (0,0,0))[2] if val not in ("WN","WS","WP","WH","OFF") else 0
+                cell_h = ws.cell(row+1, c, h_val); cell_h.alignment = center; cell_h.border = border
+            row += 2
 
-        # nagłówki
-        ws.cell(row=1,column=1,value="Nr ewidenc. pracowniKa").font=bold
-        ws.cell(row=1,column=2,value="Pracownik").font=bold
-        ws.cell(row=1,column=3,value="Godz. pracy od - do").font=bold
+        row += 1; ws.cell(row, 1, "PODSUMOWANIE").font = bold; row += 1
+        ws.cell(row, 1, "Pracownik").font = bold; ws.cell(row, 2, "Suma h").font = bold
+        ws.cell(row, 3, "Soboty").font = bold; ws.cell(row, 4, "Niedziele").font = bold; ws.cell(row, 5, "Święta").font = bold
+        row += 1
+        for s in summary:
+            ws.cell(row, 1, s["employee"]); ws.cell(row, 2, s["hours"])
+            ws.cell(row, 3, s["saturdays"]); ws.cell(row, 4, s["sundays"]); ws.cell(row, 5, s["holidays"])
+            row += 1
 
-        for i,d in enumerate(days):
-            c = 4+i
-            ws.cell(row=1,column=c,value=d.day).font=bold
-            ws.cell(row=2,column=c,value=calendar.day_name[d.weekday()][:2]).font=bold
-            if d in holidays:
-                ws.cell(row=1,column=c).fill = hol_fill; ws.cell(row=2,column=c).fill=hol_fill
-            elif d.weekday()==5:
-                ws.cell(row=1,column=c).fill = sat_fill; ws.cell(row=2,column=c).fill=sat_fill
-            elif d.weekday()==6:
-                ws.cell(row=1,column=c).fill = sun_fill; ws.cell(row=2,column=c).fill=sun_fill
-
-        row=3
-        for e,days_map in schedule.items():
-            ws.cell(row=row,column=2,value=e).font=bold
-            ws.cell(row=row,column=3,value="Godz. pracy od - do").font=bold
-            for i,d in enumerate(days):
-                c=4+i
-                val = days_map[d]
-                ws.cell(row=row,column=c,value=val)
-                # kolorowanie
-                if val in ("WN","WS","WP", "WH"):
-                    ws.cell(row=row,column=c).fill = odb_fill
-                elif d in holidays:
-                    ws.cell(row=row,column=c).fill=hol_fill
-                elif d.weekday()==5:
-                    ws.cell(row=row,column=c).fill=sat_fill
-                elif d.weekday()==6:
-                    ws.cell(row=row,column=c).fill=sun_fill
-                ws.cell(row=row,column=c).alignment = center
-                ws.cell(row=row,column=c).border = border
-            row+=1
-            # godziny dla każdego dnia
-            ws.cell(row=row,column=3,value="Liczba godz.").font=bold
-            for i,d in enumerate(days):
-                c=4+i
-                v = days_map[d]
-                if v in ("WN","WS","WP", "WW", "WH"):
-                    hrs = 0  # odbiór = 8h
-                elif v == "OFF":
-                    hrs = 0  # dzień wolny = 0h
-                else:
-                    hrs = self.SHIFTS.get(v,(None,None,0))[2]
-                ws.cell(row=row,column=c,value=hrs)
-                ws.cell(row=row,column=c).alignment = center
-                ws.cell(row=row,column=c).border = border
-            row+=1
-
-        row+=1
-        ws.cell(row=row,column=1,value="PODSUMOWANIE").font=Font(bold=True,underline="single"); row+=1
-        ws.cell(row=row,column=1,value="Pracownik").font=bold
-        ws.cell(row=row,column=2,value="Godziny").font=bold
-        ws.cell(row=row,column=3,value="Weekend").font=bold
-        ws.cell(row=row,column=4,value="Niedziela").font=bold
-        ws.cell(row=row,column=5,value="Święta").font=bold
-        row+=1
-        smap = {s["employee"]:(s["hours"],s["weekends"],s["sundays"],s["holidays"]) for s in summary}
-        for e in schedule.keys():
-            vals = smap.get(e,(0,0,0,0))
-            ws.cell(row=row,column=1,value=e)
-            ws.cell(row=row,column=2,value=vals[0])
-            ws.cell(row=row,column=3,value=vals[1])
-            ws.cell(row=row,column=4,value=vals[2])
-            ws.cell(row=row,column=5,value=vals[3])
-            row+=1
+        # --- DODAJ TO TUTAJ ---
+        for col_idx in range(1, 3 + len(self.days)):
+            col_letter = ws.cell(1, col_idx).column_letter
+            # Kolumna 1 i 2 (Pracownik i Typ) potrzebują więcej miejsca
+            if col_idx == 1:
+                ws.column_dimensions[col_letter].width = 10.72  # Pracownik (trochę szerszy)
+            elif col_idx == 2:
+                ws.column_dimensions[col_letter].width = 10.5  # Typ danych
+            else:
+                # Wartość 13.43 w Excelu odpowiada zazwyczaj dokładnie 120 pikselom
+                ws.column_dimensions[col_letter].width = 10.3
 
         wb.save(filename)
-        print("Saved:", filename)        
 
-    def generate_and_save(self, year, month, employees=None, out_filename=None):
-        sched, summ, hol = self.generate(year, month, employees)
+    def generate_and_save(self, year, month, employees=None, out_filename=None, initial_stats=None, last_weekend_workers=None, leaves=None):
+        # 1. Generujemy dane grafiku (tutaj przekazujemy leaves dalej)
+        sched, summ, hol = self.generate(year, month, employees, initial_stats, last_weekend_workers, leaves)
 
+        # 2. Logika unikalnej nazwy pliku
         if out_filename is None:
             base_name = f"harm_{year}_{month:02d}"
             out_filename = f"{base_name}.xlsx"
             
-            # jeśli plik istnieje, dodajemy _v1, _v2, ...
+            # Jeśli plik istnieje, dodajemy _v1, _v2, itd.
             version = 1
             while os.path.exists(out_filename):
                 out_filename = f"{base_name}_v{version}.xlsx"
                 version += 1
-
+        
+        # 3. Zapis do Excela
         self.save_xlsx(sched, summ, hol, year, month, out_filename)
+        print(f"Sukces! Grafik zapisany jako: {out_filename}")
