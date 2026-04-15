@@ -4,13 +4,17 @@
     "M Zbigniew","W Magdalena", "D Janusz" ],
 
   "initial_stats": {
-    "F Tomasz": {"saturdays": 11, "sundays": 20, "holidays": 11},
-    "F Krzysztof": {"saturdays": 19, "sundays": 11, "holidays": 9},
-    "S Sławomir": {"saturdays": 19, "sundays": 13, "holidays": 10},
-    "G Artur": {"saturdays": 17, "sundays": 12, "holidays": 12},
-    "M Zbigniew": {"saturdays": 15, "sundays": 17, "holidays": 10},
-    "W Magdalena": {"saturdays": 17, "sundays": 9, "holidays": 11},
-    "D Janusz": {"saturdays": 12, "sundays": 23, "holidays": 9}
+    "F Tomasz": {"saturdays": 13, "sundays": 20, "holidays": 11, "weeks_12_20": 1, "weeks_14_22": 1},
+    "F Krzysztof": {"saturdays": 19, "sundays": 12, "holidays": 10, "weeks_12_20": 0, "weeks_14_22": 1},
+    "S Sławomir": {"saturdays": 19, "sundays": 14, "holidays": 11, "weeks_12_20": 1, "weeks_14_22": 0},
+    "G Artur": {"saturdays": 17, "sundays": 13, "holidays": 12, "weeks_12_20": 0, "weeks_14_22": 0},
+    "M Zbigniew": {"saturdays": 15, "sundays": 17, "holidays": 10, "weeks_12_20": 0, "weeks_14_22": 0},
+    "W Magdalena": {"saturdays": 17, "sundays": 9, "holidays": 11, "weeks_12_20": 0, "weeks_14_22": 0},
+    "D Janusz": {"saturdays": 12, "sundays": 23, "holidays": 9, "weeks_12_20": 0, "weeks_14_22": 0}
+  },
+  "last_week_afternoons": {
+    "12-20": "D Janusz",
+    "14-22": "K Zbigniew"
   },
 
   "last_weekend_workers": [
@@ -19,7 +23,8 @@
   ],
 
   "leaves": {
-    "F Tomasz": [4, 5, 6],
-    "W Magdalena": [14, 15]
+    "F Tomasz": [1, 2, 3, 4],
+    "M Zbigniew": [28, 29],
+    "D Janusz": [28, 29]
   }
 }
